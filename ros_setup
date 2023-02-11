@@ -1,0 +1,29 @@
+#!/bin/bash
+echo 'https://wiki.ros.org/noetic/Installation/Ubuntu'
+echo 'https://f1tenth.org/build.html'
+WORKSPACE=$HOME/catkin_ws
+# Ensure curl, git
+sudo apt install curl git -y
+# Add repo
+sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+# Add keys
+curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
+sudo apt update
+sudo apt install ros-noetic-desktop-full -y
+# Sim deps
+sudo apt-get install ros-noetic-tf2-geometry-msgs ros-noetic-ackermann-msgs ros-noetic-joy ros-noetic-map-server -y
+
+
+
+mkdir -p $WORKSPACE/src
+git clone https://github.com/f1tenth/f1tenth_simulator.git $WORKSPACE/src
+pushd $WORKSPACE
+
+
+echo "source $WORKSPACE/devel/setup.bash" >> $HOME/.bashrc
+source $HOME/.bashrc
+catkin_make
+echo "source /opt/ros/noetic/setup.bash" >> $HOME/.bashrc
+source $HOME/.bashrc
+echo "alias f1tenth_sim='roslaunch f1tenth_simulator simulator.launch'" >> $HOME/.bashrc
+popd
