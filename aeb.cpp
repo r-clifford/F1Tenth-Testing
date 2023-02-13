@@ -4,6 +4,7 @@
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float64.h>
 #include <geometry_msgs/Vector3.h>
+#include <tf/transform_datatypes.h>
 #include <std_msgs/Bool.h>
 #include <nav_msgs/Odometry.h>
 #include <vector>
@@ -40,10 +41,8 @@ public:
     void pub()
     {
 
-        geometry_msgs::Vector3 tmp = odom_info_.twist.twist.linear;
-        double vx = tmp.x;
-        double vy = tmp.y;
-        std::vector<double> v = {vx, vy};
+        auto v = tf::Vector3{};
+        tf::vector3MsgToTF(odom_info_.twist.twist.linear, v);
         double angle = lidar_info_.angle_min;
         double current_ttc = std::numeric_limits<double>::max();
         for (unsigned int i = 0; i < lidar_info_.ranges.size(); i++)
@@ -57,9 +56,9 @@ public:
             angle += lidar_info_.angle_increment;
             double dx = cos(angle) * distance;
             double dy = sin(angle) * distance;
-            std::vector<double> d = {dx, dy};
-            std::vector<double> vproj = AutoEBrake::elem_wise_mul_(AutoEBrake::dot_(v, d) / AutoEBrake::dot_(d, d), d);
-            double proj = AutoEBrake::dot_(vproj, vproj);
+            auto d = tf::Vector3{dx, dy, 0.0};
+            tf::Vector3 vproj = v.dot(d) / d.dot(d) * d;
+            double proj = vproj.dot(vproj);
             double ttc = distance / (std::max(proj, 0.0));
             if (ttc < current_ttc)
             {
@@ -92,24 +91,6 @@ private:
     ros::Subscriber sub_odom_;
     sensor_msgs::LaserScan lidar_info_;
     nav_msgs::Odometry odom_info_;
-    static double dot_(std::vector<double> a, std::vector<double> b)
-    {
-        double c = 0;
-        for (int i = 0; i < a.size(); i++)
-        {
-            c += a[i] * b[i];
-        }
-        return c;
-    }
-    static std::vector<double> elem_wise_mul_(double scalar, std::vector<double> v)
-    {
-        std::vector<double> out = std::vector<double>();
-        for (double elem : v)
-        {
-            out.push_back(elem * scalar);
-        }
-        return out;
-    }
 };
 
 int main(int argc, char **argv)
