@@ -1,0 +1,19 @@
+#!/bin/bash
+WORKSPACE=$HOME/catkin_ws
+sudo apt update
+sudo apt install python3-wstool python3-rosdep ninja-build stow -y
+
+pushd $WORKSPACE
+wstool init src
+wstool merge -t src https://raw.githubusercontent.com/cartographer-project/cartographer_ros/master/cartographer_ros.rosinstall
+wstool update -t src
+
+sudo rosdep init
+rosdep update
+rosdep install --from-paths src --ignore-src --ros-distro=${ROS_DISTRO} -y
+
+$WORKSPACE/src/cartographer/scripts/install_abseil.sh
+# sudo apt-get remove ros-${ROS_DISTRO}-abseil-cpp
+
+catkin_make_isolated --install --use-ninja
+popd
