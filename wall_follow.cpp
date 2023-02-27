@@ -16,15 +16,15 @@
 #include <std_msgs/String.h>
 #include <string.h>
 #define KP 1.00
-#define KD 0.0001
-#define KI 0.01
+#define KD 0.00
+#define KI 0.00
 
 #define ANGLE_RANGE 270 // degrees
-#define OPTIMAL_DISTANCE 1.20 // distance from target wall
+#define OPTIMAL_DISTANCE 0.75 // distance from target wall
 #define VELOCITY 2.00
 #define CAR_LENGTH 0.50
-#define LOOKAHEAD 1.00 // distance traveled at t+1
-
+#define LOOKAHEAD 0.80 // distance traveled at t+1
+// TODO: Try to reduce number of branches
 
 enum Side {
     Left,
@@ -38,8 +38,7 @@ public:
         pub_nav_ = n_.advertise<ackermann_msgs::AckermannDriveStamped>("/nav", 1000);
         sub_stay_right_ = n_.subscribe("/side", 1, &WallFollower::side_callback, this);
         sub_lidar_ = n_.subscribe("/scan", 1, &WallFollower::lidar_callback, this);
-        // sub_odom_ = n_.subscribe("/odom", 1000, &AutoEBrake::odom_callback, this);
-        side = Left; // start following right wall, arbitrary
+        side = Left;
         angle = 0.0;
         c_time = ros::Time::now();
     }
@@ -59,8 +58,12 @@ public:
         std::vector<double> ranges(std::begin(data.ranges), std::end(data.ranges));
         int index_a;
         int index_b;
-        index_a = floor(a_angle - data.angle_min) / data.angle_increment;
-        index_b = floor(b_angle - data.angle_min) / data.angle_increment;
+        index_a = (a_angle - data.angle_min) / data.angle_increment;
+        index_b = (b_angle - data.angle_min) / data.angle_increment;
+        if (side == Side::Right) {
+            index_a = (data.angle_max - a_angle) / data.angle_increment;
+            index_b = (data.angle_max - b_angle) / data.angle_increment;
+        }
         double a = data.ranges[index_a];
         if (std::isinf(a) || std::isnan(a)) {
             index_a++;
@@ -71,19 +74,21 @@ public:
             index_b++;
             b = data.ranges[index_b];
         }
-//        a_angle = index_a + data.angle_min * data.angle_increment;
-//        b_angle = index_b + data.angle_min * data.angle_increment;
-        double theta = (a_angle - b_angle);
-        double alpha = atan((a * cos(theta) - b)/(a * sin(theta)));
+        a_angle = index_a * data.angle_increment + data.angle_min;
+        b_angle = index_b * data.angle_increment + data.angle_min;
+        if (side == Side::Right) {
+            a_angle = data.angle_max - index_a * data.angle_increment;
+            b_angle = data.angle_max - index_b * data.angle_increment;
+        }
+        double theta = b_angle - a_angle;
+        double alpha = atan((a * cos(theta) - b) / (a * sin(theta)));
         double B = b * cos(alpha);
         double B_proj = B + LOOKAHEAD * sin(alpha); // projected distance from wall at t+1
 
         p_error = c_error;
-        c_error = -(target_distance - B_proj + LOOKAHEAD * sin(angle));
-        double new_angle = pid_control();
-//        ROS_INFO_STREAM(B);
-        angle = new_angle;
-        ROS_INFO_STREAM(angle);
+        c_error = B_proj - target_distance;
+        angle = pid_control();
+
         follow();
     }
 
@@ -102,9 +107,9 @@ public:
         if (abs(angle) < (5.0 / 180.0 * M_PI)) {
            speed = 2.0;
         } else if (abs(angle) < (15)) {
-           speed = 1.0;
+           speed = 1.5;
         } else {
-            speed = 0.5;
+            speed = 0.75;
         }
         driveStamped.drive.speed = speed;
         pub_nav_.publish(driveStamped);
