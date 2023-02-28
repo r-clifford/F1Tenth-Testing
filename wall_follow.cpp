@@ -16,11 +16,12 @@
 #include <std_msgs/String.h>
 #include <string.h>
 #define KP 1.00
-#define KD 0.00
+#define KD 0.01
 #define KI 0.00
-
+#define MAX_ANGLE (0.4189 / 2)
 #define ANGLE_RANGE 270 // degrees
-#define OPTIMAL_DISTANCE 0.75 // distance from target wall
+#define OPTIMAL_DISTANCE_R 1.0 // distance from target wall
+#define OPTIMAL_DISTANCE_L 1.0 // distance from target wall
 #define VELOCITY 2.00
 #define CAR_LENGTH 0.50
 #define LOOKAHEAD 0.80 // distance traveled at t+1
@@ -35,12 +36,17 @@ class WallFollower
 public:
     WallFollower()
     {
-        pub_nav_ = n_.advertise<ackermann_msgs::AckermannDriveStamped>("/nav", 1000);
-        sub_stay_right_ = n_.subscribe("/side", 1, &WallFollower::side_callback, this);
+        pub_nav_ = n_.advertise<ackermann_msgs::AckermannDriveStamped>("/nav", 1);
+        sub_side_ = n_.subscribe("/side", 1, &WallFollower::side_callback, this);
         sub_lidar_ = n_.subscribe("/scan", 1, &WallFollower::lidar_callback, this);
-        side = Left;
+        sub_follow_wall_ = n_.subscribe("/follow_wall", 1, &WallFollower::enable_callback, this);
+        side = Right;
         angle = 0.0;
         c_time = ros::Time::now();
+        enabled = false;
+    }
+    void enable_callback(std_msgs::Bool enable) {
+        enabled = enable.data;
     }
     void side_callback(std_msgs::String side_msg) {
        if (side_msg.data == "right") {
@@ -52,18 +58,17 @@ public:
        }
     }
     void lidar_callback(sensor_msgs::LaserScan data) {
-        double a_angle = 45.0/180.0 * M_PI;
+        double a_angle = 60.0/180.0 * M_PI;
         double b_angle = 90.0/180.0 * M_PI;
-
+        if (side == Side::Right) {
+            a_angle *= -1;
+            b_angle *= -1;
+        }
         std::vector<double> ranges(std::begin(data.ranges), std::end(data.ranges));
         int index_a;
         int index_b;
         index_a = (a_angle - data.angle_min) / data.angle_increment;
         index_b = (b_angle - data.angle_min) / data.angle_increment;
-        if (side == Side::Right) {
-            index_a = (data.angle_max - a_angle) / data.angle_increment;
-            index_b = (data.angle_max - b_angle) / data.angle_increment;
-        }
         double a = data.ranges[index_a];
         if (std::isinf(a) || std::isnan(a)) {
             index_a++;
@@ -76,17 +81,19 @@ public:
         }
         a_angle = index_a * data.angle_increment + data.angle_min;
         b_angle = index_b * data.angle_increment + data.angle_min;
-        if (side == Side::Right) {
-            a_angle = data.angle_max - index_a * data.angle_increment;
-            b_angle = data.angle_max - index_b * data.angle_increment;
-        }
+
         double theta = b_angle - a_angle;
+        if (side == Side::Right) {
+            theta *= -1;
+        }
         double alpha = atan((a * cos(theta) - b) / (a * sin(theta)));
         double B = b * cos(alpha);
         double B_proj = B + LOOKAHEAD * sin(alpha); // projected distance from wall at t+1
-
         p_error = c_error;
-        c_error = B_proj - target_distance;
+        c_error = B_proj - OPTIMAL_DISTANCE_L;
+        if (side == Side::Right) {
+           c_error = OPTIMAL_DISTANCE_R - B_proj;
+        }
         angle = pid_control();
 
         follow();
@@ -103,24 +110,31 @@ public:
 
     void follow() {
         ackermann_msgs::AckermannDriveStamped driveStamped;
-        driveStamped.drive.steering_angle = angle;
+        double s_angle = std::min(abs(angle), MAX_ANGLE);
+        if (angle < 0) {
+            s_angle *= -1;
+        }
+        driveStamped.drive.steering_angle = s_angle;
         if (abs(angle) < (5.0 / 180.0 * M_PI)) {
-           speed = 2.0;
+           speed = 7.0;
         } else if (abs(angle) < (15)) {
-           speed = 1.5;
+           speed = 4.0;
         } else {
-            speed = 0.75;
+            speed = 2.0;
         }
         driveStamped.drive.speed = speed;
-        pub_nav_.publish(driveStamped);
+        if (enabled) {
+            pub_nav_.publish(driveStamped);
+        }
     }
 
 private:
     double dt;
     ros::NodeHandle n_;
-    ros::Subscriber sub_stay_right_;
+    ros::Subscriber sub_side_;
     ros::Publisher pub_nav_;
     ros::Subscriber sub_lidar_;
+    ros::Subscriber sub_follow_wall_;
     // PID parameters
     double kp = KP;
     double ki = KI;
@@ -135,9 +149,9 @@ private:
     // current and previous time
     ros::Time c_time;
     ros::Time p_time;
-    double target_distance = OPTIMAL_DISTANCE;
     double delta = 0.0; // distance from target
     Side side;
+    bool enabled;
 };
 
 int main(int argc, char **argv)
