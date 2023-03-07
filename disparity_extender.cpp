@@ -20,12 +20,16 @@
 #define CAR_LENGTH 0.50
 #define CAR_WIDTH 0.50
 #define DISPARITY_THRESHOLD 0.3
-#define SIDE_THRESHOLD 1.0// threshold for a disparity to be considered in side calc
-#define TURN_THRESHOLD 0.1 // distance from min disparity to begin turn TODO:
+#define SIDE_THRESHOLD 1.0// threshold for a disparity to be considered in side calc TODO: SR
+#define TURN_THRESHOLD 0.1 // distance from min disparity to begin turn TODO: SR
 #define MAX_ANGLE 0.4189
 #define VELOCITY_SCALAR (1.0/8.0)
-#define WALL_FOLLOW false
+#define WALL_FOLLOW false // TODO: SR
 
+/* TODO: switching logic refactor (SR)
+ * Remove logic related to switching between disparity extender and wall follow nodes
+ * Will implement separate node in the future
+ */
 /* TODO: Disparity extender (DE) is working seemingly fully
  * Integration with wall following (WF) is partially implemented, but performing much
  * worse than DE alone
@@ -54,6 +58,7 @@
  *          Most likely will require tuning per map
  *      DE only needs DISPARITY_THRESHOLD, MAX_ANGLE?, velocity function
  *
+ * TODO: decouple switching logic
 */
 class DisparityExtender {
 public:
@@ -69,15 +74,17 @@ public:
     }
 
     void lidar_callback(sensor_msgs::LaserScan data) {
-        min_idx = (-angle_range - data.angle_min) / data.angle_increment;
-        max_idx = (angle_range - data.angle_min) / data.angle_increment;
+        min_idx = (-angle_range - data.angle_min) / data.angle_increment; // idx of min angle
+        max_idx = (angle_range - data.angle_min) / data.angle_increment; // idx max angle
         ranges = std::vector<double>(std::begin(data.ranges), std::end(data.ranges));
-        clean_ranges(data.range_min, data.range_max);
+        clean_ranges(data.range_min, data.range_max); // clip to angle_min, angle_max
         filter_disparities(data.angle_increment);
         size_t i = get_target_index();
         target_distance = ranges[i];
-        angle = data.angle_min + i * data.angle_increment;
 
+        // angle to largest range (target steering angle)
+        angle = data.angle_min + i * data.angle_increment;
+        // TODO: switching refactor BEGIN
         size_t closest = closest_disparity();
         double closest_distance = ranges[closest];
         double closest_angle = closest * data.angle_increment + data.angle_min;
@@ -85,7 +92,6 @@ public:
         // f = h / (tan theta)
         double forward_distance = abs(closest_distance / tan(closest_angle));
         auto tmp = 180 / M_PI * closest_angle;
-        ROS_INFO_STREAM(closest_distance);
         auto side = std_msgs::String{};
 
         if (closest_angle > 0) {
@@ -97,7 +103,6 @@ public:
         pub_side_.publish(side);
         auto msg = std_msgs::Bool{};
         if (WALL_FOLLOW) {
-
 //            if (abs(forward_distance - closest_distance) < turn_threshold) {
             if (forward_distance > turn_threshold) {
                 enabled = true;
@@ -107,11 +112,13 @@ public:
                 msg.data = true;
             }
         }
+        // TODO: switching refactor END
         pub_follow_wall_.publish(msg);
         publish();
     }
 
     size_t closest_disparity() {
+        // TODO: remove switching refactor
         // returns index of closest disparity
         double c_min = std::numeric_limits<double>::max();
         size_t c_idx = 0;
@@ -126,6 +133,9 @@ public:
     }
 
     size_t get_target_index() {
+        /*
+         * Find the largest range in [min_idx, max_idx] and return the index
+         */
         double c_max = 0.0;
         size_t i_max = 0;
         for (size_t i = min_idx; i < max_idx; i++) {
@@ -136,37 +146,44 @@ public:
             }
         }
         return i_max;
-//        return std::distance(ranges.begin(), std::max_element(std::begin(ranges), std::end(ranges)));
     }
 
     void filter_disparities(double angle_inc) {
+        /*
+         * Search for disparities > disparity_threshold
+         * If found, set all lidar points around the disparity to the nearest part of the disparity
+         */
         for (size_t i = min_idx; i < max_idx - 1; i++) {
             double close = std::min(ranges[i], ranges[i + 1]);
+
+            // index 'radius' of car at distance *close*
             size_t d_idx = mask_from_distance(close, angle_inc);
             size_t tmp;
             double disparity = abs(ranges[i] - ranges[i + 1]);
             if (disparity > disparity_threshold) {
-                // if disparity found, backtrack to create bubble around disparity
-                // radius approx 1 car width
+                // TODO: remove as part of switching refactor
                 if (disparity > SIDE_THRESHOLD) {
                     disparity_indexes.push_back(i);
                 }
-                tmp = i + d_idx;
-                i -= d_idx;
+                // if disparity found, backtrack to create bubble around disparity
+                // radius approx 1 car width
+                tmp = i + d_idx; // stop at i + car radius
+                i -= d_idx; // start at i - car radius
                 for (; i < tmp; i++) {
+                    // set to *close* if current range is > *close*
                     ranges[i] = std::min(ranges[i], close);
                 }
             }
         }
     }
 
+
     void clean_ranges(double r_min, double r_max) {
-//        for (size_t i = 0; i < min_idx; i++) {
-//            ranges[i] = 0.0;
-//        }
-//        for (size_t i = max_idx; i < ranges.size(); i++) {
-//            ranges[i] = 0.0;
-//        }
+        /* Given r_min, r_max, lidar min and max ranges respectively,
+         * Ensure all range values are withing [r_min, r_max]
+         * r < r_min or r == NaN: set range to 0
+         * r > r_min or r == inf clip to r_max
+         */
         for (size_t i = min_idx; i < max_idx; i++) {
             double *r = &ranges[i];
             if (std::isnan(*r) || *r < r_min) {
@@ -178,10 +195,8 @@ public:
     }
 
     size_t mask_from_distance(double distance, double angle_inc) {
-        // at a distance, find angle corresponding to car width
-        /*
-         * Need number of lidar points covering car width at some distance
-         *  theta = arc len / radius
+        /* at a distance, find angle corresponding to car width
+         * return the number of index that correspond with the angle
          */
         double theta = CAR_WIDTH / distance;
         return theta / angle_inc;
@@ -213,19 +228,19 @@ private:
     ros::NodeHandle n_;
     ros::Publisher pub_nav_;
     ros::Publisher pub_side_;
-    ros::Publisher pub_follow_wall_;
+    ros::Publisher pub_follow_wall_; // TODO: SR
     ros::Subscriber sub_lidar_;
     double angle; // steering angle
     double speed;
     double disparity_threshold;
-    double turn_threshold;
+    double turn_threshold; // TODO: SR
     double angle_range; // +- angle_range is max angle of lidar readings used
     std::vector<double> ranges;
     size_t min_idx;
     size_t max_idx;
     double target_distance;
     bool enabled;
-    std::vector<size_t> disparity_indexes;
+    std::vector<size_t> disparity_indexes; // TODO: SR
 };
 
 int main(int argc, char **argv) {
